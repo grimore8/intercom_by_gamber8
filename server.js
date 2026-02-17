@@ -1,6 +1,7 @@
 // server.js
-// Intercom Dashboard Bot — Localhost Web UI + Agent + Dexscreener + Charts (Canvas)
-// Cache TTL prevents spam + reduces 429 risk
+// Intercom Dashboard Bot — Localhost Web UI + Dexscreener + GeckoTerminal OHLCV Charts + Agent
+// NOTE: Dexscreener API has no OHLCV candles; we use GeckoTerminal for candle data.
+// Cache TTL reduces rate limits.
 
 import express from "express";
 
@@ -16,6 +17,9 @@ const TX_LIMIT = Number(process.env.TX_LIMIT || 10);
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
 const GROQ_BASE = "https://api.groq.com/openai/v1";
+
+// GeckoTerminal (free public API)
+const GECKO_BASE = "https://api.geckoterminal.com/api/v2";
 
 const cache = new Map(); // key -> { ts, data }
 async function cached(key, fn) {
@@ -144,8 +148,7 @@ app.get("/api/chart", async (req, res) => {
       const r = await fetch(url);
       if (!r.ok) throw new Error(`CoinGecko ${r.status}`);
       const j = await r.json();
-      // j.prices = [[ts, price], ...]
-      const prices = Array.isArray(j?.prices) ? j.prices.slice(-120) : []; // last ~120 points
+      const prices = Array.isArray(j?.prices) ? j.prices.slice(-180) : []; // last points
       return { prices };
     });
 
@@ -191,8 +194,28 @@ app.post("/api/simulate", (req, res) => {
 });
 
 // ================================
-// ✅ DEXSCREENER + AGENT ENDPOINTS
+// ✅ DEXSCREENER + AGENT + TOKEN OHLCV (GeckoTerminal)
 // ================================
+
+function mapDexChainToGeckoNetwork(chainId) {
+  const c = String(chainId || "").toLowerCase();
+  // GeckoTerminal uses "networks/{network}"
+  // common matches:
+  // solana, ethereum, bsc, base, arbitrum, polygon, avalanche, optimism, etc.
+  const map = {
+    solana: "solana",
+    ethereum: "ethereum",
+    eth: "ethereum",
+    bsc: "bsc",
+    "binance-smart-chain": "bsc",
+    base: "base",
+    polygon: "polygon_pos",
+    arbitrum: "arbitrum",
+    optimism: "optimism",
+    avalanche: "avax",
+  };
+  return map[c] || c || null;
+}
 
 async function fetchDex(q) {
   let url;
@@ -217,7 +240,7 @@ async function fetchDex(q) {
     volume24h: p.volume?.h24 || 0,
     fdv: p.fdv || 0,
     pairAddress: p.pairAddress || "",
-    url: p.url || ""
+    url: p.url || "",
   };
 }
 
@@ -231,6 +254,80 @@ app.get("/api/dex", async (req, res) => {
     if (!data) return res.json({ ok: false, error: "No pairs found. Try CA for accuracy." });
 
     res.json({ ok: true, q, data, updated: new Date().toISOString() });
+  } catch (e) {
+    res.json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// ✅ Token OHLCV chart (24h) using GeckoTerminal candles
+// Flow: q -> Dexscreener (pairAddress+chain) -> GeckoTerminal OHLCV -> return close series for canvas chart
+// GET /api/token_chart?q=<symbol or CA>
+app.get("/api/token_chart", async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    if (!q) return res.status(400).json({ ok: false, error: "Missing q" });
+
+    const dex = await cached(`dex:${q}`, async () => await fetchDex(q));
+    if (!dex) return res.json({ ok: false, error: "No pairs found. Use contract address (CA)." });
+
+    const network = mapDexChainToGeckoNetwork(dex.chain);
+    const pool = dex.pairAddress;
+
+    if (!network || !pool) {
+      return res.json({ ok: false, error: "Missing network/pool. Try CA or different token." });
+    }
+
+    // GeckoTerminal OHLCV endpoint
+    // /networks/{network}/pools/{pool_address}/ohlcv/{timeframe}?aggregate=1&before_timestamp=...
+    // timeframe: minute|hour|day (doc supports granular + aggregate) :contentReference[oaicite:1]{index=1}
+    const timeframe = "hour";
+    const aggregate = 1;
+
+    const data = await cached(`ohlcv:${network}:${pool}`, async () => {
+      const url = `${GECKO_BASE}/networks/${encodeURIComponent(network)}/pools/${encodeURIComponent(pool)}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=48`;
+      const r = await fetch(url, {
+        headers: {
+          // GeckoTerminal public API: no key required (cached) :contentReference[oaicite:2]{index=2}
+          accept: "application/json",
+        },
+      });
+      if (!r.ok) throw new Error(`GeckoTerminal ${r.status}`);
+      const j = await r.json();
+
+      // Response structure can vary; we extract OHLCV list safely.
+      // Expect: data.attributes.ohlcv_list = [[ts, open, high, low, close, volume], ...]
+      const ohlcv =
+        j?.data?.attributes?.ohlcv_list ||
+        j?.data?.attributes?.ohlcv ||
+        j?.data?.attributes?.candles ||
+        [];
+
+      if (!Array.isArray(ohlcv) || !ohlcv.length) {
+        return { ohlcv: [], closes: [] };
+      }
+
+      // Normalize -> [tsMs, close]
+      const closes = ohlcv
+        .filter((row) => Array.isArray(row) && row.length >= 5)
+        .map((row) => {
+          const ts = Number(row[0]); // seconds or ms depending
+          const close = Number(row[4]);
+          const tsMs = ts > 2_000_000_000 ? ts * 1000 : ts * 1000; // keep ms
+          return [tsMs, close];
+        })
+        .slice(-48);
+
+      return { ohlcv, closes };
+    });
+
+    res.json({
+      ok: true,
+      q,
+      dex,
+      gecko: { network, pool, timeframe, aggregate, points: data.closes.length },
+      closes: data.closes,
+      updated: new Date().toISOString(),
+    });
   } catch (e) {
     res.json({ ok: false, error: String(e?.message || e) });
   }
@@ -290,7 +387,6 @@ No hype. No guarantees.
 Token query: ${q}
 Dexscreener snapshot:
 ${JSON.stringify(dex, null, 2)}
-
 Use the snapshot only.
 `.trim();
 
@@ -304,7 +400,7 @@ Use the snapshot only.
         signal,
         why: why.slice(0, 3),
         risk: { status, flags: flags.slice(0, 4), checklist: checklist.slice(0, 4) },
-        decision
+        decision,
       };
     }
 
@@ -314,7 +410,7 @@ Use the snapshot only.
       dex,
       agent: out,
       updated: new Date().toISOString(),
-      mode: GROQ_API_KEY ? "ai" : "fallback"
+      mode: GROQ_API_KEY ? "ai" : "fallback",
     });
   } catch (e) {
     res.json({ ok: false, error: String(e?.message || e) });
