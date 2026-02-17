@@ -1,6 +1,6 @@
 // server.js
-// Intercom Dashboard Bot — Localhost Web UI + Agent + Dexscreener
-// Anti-429: cache TTL
+// Intercom Dashboard Bot — Localhost Web UI + Agent + Dexscreener + Charts (Canvas)
+// Cache TTL prevents spam + reduces 429 risk
 
 import express from "express";
 
@@ -42,10 +42,7 @@ async function solRpc(method, params = []) {
   if (j?.error) throw new Error(j.error?.message || "RPC error");
   return j.result;
 }
-
-function lamportsToSOL(l) {
-  return Number(l) / 1_000_000_000;
-}
+const lamportsToSOL = (l) => Number(l) / 1_000_000_000;
 
 // ---- Optional Groq JSON helper ----
 async function groqJSON(system, user) {
@@ -118,7 +115,7 @@ app.get("/api/sol/tx", async (req, res) => {
   }
 });
 
-// ---- Prices (CoinGecko) ----
+// ---- Prices (CoinGecko simple) ----
 app.get("/api/prices", async (_req, res) => {
   try {
     const data = await cached("prices", async () => {
@@ -129,6 +126,30 @@ app.get("/api/prices", async (_req, res) => {
       return await r.json();
     });
     res.json({ ok: true, data, updated: new Date().toISOString() });
+  } catch (e) {
+    res.json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// ✅ Chart data (CoinGecko market_chart 24h) — lightweight
+// /api/chart?coin=bitcoin|ethereum|solana
+app.get("/api/chart", async (req, res) => {
+  try {
+    const coin = String(req.query.coin || "bitcoin").trim();
+    const allow = new Set(["bitcoin", "ethereum", "solana"]);
+    if (!allow.has(coin)) return res.status(400).json({ ok: false, error: "coin must be bitcoin|ethereum|solana" });
+
+    const data = await cached(`chart:${coin}`, async () => {
+      const url = `https://api.coingecko.com/api/v3/coins/${coin}/market_chart?vs_currency=usd&days=1`;
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`CoinGecko ${r.status}`);
+      const j = await r.json();
+      // j.prices = [[ts, price], ...]
+      const prices = Array.isArray(j?.prices) ? j.prices.slice(-120) : []; // last ~120 points
+      return { prices };
+    });
+
+    res.json({ ok: true, coin, ...data, updated: new Date().toISOString() });
   } catch (e) {
     res.json({ ok: false, error: String(e?.message || e) });
   }
@@ -173,85 +194,58 @@ app.post("/api/simulate", (req, res) => {
 // ✅ DEXSCREENER + AGENT ENDPOINTS
 // ================================
 
+async function fetchDex(q) {
+  let url;
+  if (q.startsWith("0x") || q.length > 30) {
+    url = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(q)}`;
+  } else {
+    url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(q)}`;
+  }
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Dexscreener ${r.status}`);
+  const j = await r.json();
+  if (!j?.pairs?.length) return null;
+
+  const p = j.pairs[0];
+  return {
+    name: p.baseToken?.name || "Unknown",
+    symbol: p.baseToken?.symbol || "Unknown",
+    chain: p.chainId || "unknown",
+    dex: p.dexId || "unknown",
+    priceUsd: p.priceUsd || "N/A",
+    liquidityUsd: p.liquidity?.usd || 0,
+    volume24h: p.volume?.h24 || 0,
+    fdv: p.fdv || 0,
+    pairAddress: p.pairAddress || "",
+    url: p.url || ""
+  };
+}
+
 // Fetch Dexscreener market snapshot (symbol or CA)
 app.get("/api/dex", async (req, res) => {
   try {
     const q = String(req.query.q || "").trim();
     if (!q) return res.status(400).json({ ok: false, error: "Missing q (symbol or CA)" });
 
-    const data = await cached(`dex:${q}`, async () => {
-      let url;
-      if (q.startsWith("0x") || q.length > 30) {
-        url = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(q)}`;
-      } else {
-        url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(q)}`;
-      }
-
-      const r = await fetch(url);
-      if (!r.ok) throw new Error(`Dexscreener ${r.status}`);
-      const j = await r.json();
-      if (!j?.pairs?.length) return null;
-
-      const p = j.pairs[0];
-      return {
-        name: p.baseToken?.name || "Unknown",
-        symbol: p.baseToken?.symbol || "Unknown",
-        chain: p.chainId || "unknown",
-        dex: p.dexId || "unknown",
-        priceUsd: p.priceUsd || "N/A",
-        liquidityUsd: p.liquidity?.usd || 0,
-        volume24h: p.volume?.h24 || 0,
-        fdv: p.fdv || 0,
-        pairAddress: p.pairAddress || "",
-        url: p.url || ""
-      };
-    });
-
+    const data = await cached(`dex:${q}`, async () => await fetchDex(q));
     if (!data) return res.json({ ok: false, error: "No pairs found. Try CA for accuracy." });
+
     res.json({ ok: true, q, data, updated: new Date().toISOString() });
   } catch (e) {
     res.json({ ok: false, error: String(e?.message || e) });
   }
 });
 
-// Agent analyze (uses Dex snapshot + AI optional)
+// Agent analyze (Dex snapshot + AI optional)
 app.get("/api/agent/analyze", async (req, res) => {
   try {
     const q = String(req.query.q || "").trim();
     if (!q) return res.status(400).json({ ok: false, error: "Missing q" });
 
-    // get dex data via cache
-    const dex = await cached(`dex:${q}`, async () => {
-      let url;
-      if (q.startsWith("0x") || q.length > 30) {
-        url = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(q)}`;
-      } else {
-        url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(q)}`;
-      }
-      const r = await fetch(url);
-      if (!r.ok) throw new Error(`Dexscreener ${r.status}`);
-      const j = await r.json();
-      if (!j?.pairs?.length) return null;
-      const p = j.pairs[0];
-      return {
-        name: p.baseToken?.name || "Unknown",
-        symbol: p.baseToken?.symbol || "Unknown",
-        chain: p.chainId || "unknown",
-        dex: p.dexId || "unknown",
-        priceUsd: p.priceUsd || "N/A",
-        liquidityUsd: p.liquidity?.usd || 0,
-        volume24h: p.volume?.h24 || 0,
-        fdv: p.fdv || 0,
-        pairAddress: p.pairAddress || "",
-        url: p.url || ""
-      };
-    });
+    const dex = await cached(`dex:${q}`, async () => await fetchDex(q));
+    if (!dex) return res.json({ ok: false, error: "No pairs found. Use contract address (CA)." });
 
-    if (!dex) {
-      return res.json({ ok: false, error: "No pairs found. Use contract address (CA)." });
-    }
-
-    // ---------- Fallback logic (no API) ----------
+    // ---------- Fallback logic ----------
     const liq = Number(dex.liquidityUsd || 0);
     const vol = Number(dex.volume24h || 0);
 
@@ -267,8 +261,6 @@ app.get("/api/agent/analyze", async (req, res) => {
     } else if (liq < 20000) {
       status = "CAUTION";
       flags.push("Low liquidity → expect slippage.");
-    } else {
-      status = "CAUTION";
     }
 
     if (vol < 5000) {
@@ -276,17 +268,12 @@ app.get("/api/agent/analyze", async (req, res) => {
       flags.push("Very low 24h volume → easy to manipulate.");
     }
 
-    if (liq >= 50000 && vol >= 50000) {
-      signal = "HOLD";
-      why.push("Liquidity + volume look healthy.");
-      why.push("Still avoid chasing — wait confirmation.");
-    } else {
-      signal = "HOLD";
-      why.push("Data suggests higher risk or weak confirmation.");
-      why.push("Prefer patience until liquidity/volume improve.");
-    }
+    signal = "HOLD";
+    why.push(liq >= 50000 && vol >= 50000 ? "Liquidity + volume look healthy (still not a guarantee)." : "Risk/confirmation is weak from snapshot.");
+    why.push("Avoid chasing pumps — wait for confirmation.");
+    why.push("Start with tiny size if you proceed.");
 
-    // ---------- Optional AI refine (Groq) ----------
+    // ---------- Optional AI refine ----------
     const system = `
 You are a trading copilot (Intercom-style).
 Return STRICT JSON only:
@@ -310,19 +297,14 @@ Use the snapshot only.
     const ai = await groqJSON(system, user);
 
     let out;
-    if (ai && ai.signal && ai.risk?.status) {
-      out = ai;
-    } else {
+    if (ai && ai.signal && ai.risk?.status) out = ai;
+    else {
       const decision = status === "BLOCK" ? "DO NOT TRADE" : "SMALL SIZE / WAIT";
       out = {
         signal,
         why: why.slice(0, 3),
-        risk: {
-          status,
-          flags: flags.slice(0, 4),
-          checklist: checklist.slice(0, 4),
-        },
-        decision,
+        risk: { status, flags: flags.slice(0, 4), checklist: checklist.slice(0, 4) },
+        decision
       };
     }
 
@@ -332,7 +314,7 @@ Use the snapshot only.
       dex,
       agent: out,
       updated: new Date().toISOString(),
-      mode: GROQ_API_KEY ? "ai" : "fallback",
+      mode: GROQ_API_KEY ? "ai" : "fallback"
     });
   } catch (e) {
     res.json({ ok: false, error: String(e?.message || e) });
