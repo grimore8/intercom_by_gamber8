@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>⚡ Intercom Dashboard Bot</title>
+  <style>
+    :root{
+      --bg:#071018;
+      --panel:#0b1a24;
+      --panel2:#07151f;
+      --line:#143245;
+      --text:#d7f7ff;
+      --muted:#8ab3c2;
+      --accent:#4ff7c8;
+      --accent2:#4aa3ff;
+      --warn:#ffce4a;
+      --bad:#ff5b6b;
+      --shadow: 0 12px 30px rgba(0,0,0,.35);
+      --radius: 18px;
+      --mono: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      background: radial-gradient(1200px 900px at 20% 10%, rgba(79,247,200,.10), transparent 45%),
+                  radial-gradient(900px 800px at 90% 20%, rgba(74,163,255,.10), transparent 40%),
+                  var(--bg);
+      color:var(--text);
+      font-family: var(--mono);
+      letter-spacing:.2px;
+    }
+    .wrap{max-width:900px;margin:18px auto;padding:16px}
+    .title{
+      font-size:28px;font-weight:800;
+      display:flex;gap:10px;align-items:center;
+      margin:6px 0 14px;
+    }
+    .title .bolt{color:var(--warn)}
+    .sub{color:var(--muted);margin-bottom:14px}
+    .grid{display:grid;grid-template-columns:1fr;gap:14px}
+    .card{
+      background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.01));
+      border:1px solid rgba(20,50,69,.7);
+      border-radius:var(--radius);
+      box-shadow: var(--shadow);
+      padding:14px;
+      position:relative;
+      overflow:hidden;
+    }
+    .card:before{
+      content:"";
+      position:absolute;inset:-2px;
+      background: radial-gradient(600px 180px at 30% 0%, rgba(79,247,200,.12), transparent 60%),
+                  radial-gradient(600px 180px at 80% 0%, rgba(74,163,255,.10), transparent 60%);
+      pointer-events:none;
+      opacity:.9;
+    }
+    .card > *{position:relative}
+    .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;justify-content:space-between}
+    .pill{
+      display:inline-flex;gap:8px;align-items:center;
+      padding:10px 12px;border:1px solid rgba(20,50,69,.85);
+      border-radius:999px;background:rgba(7,21,31,.6);
+      color:var(--text);
+    }
+    .pill strong{color:var(--accent)}
+    .btn{
+      cursor:pointer;
+      padding:10px 14px;border-radius:12px;
+      border:1px solid rgba(20,50,69,.9);
+      background:rgba(7,21,31,.65);
+      color:var(--text);
+      font-family:var(--mono);
+    }
+    .btn:hover{border-color:rgba(79,247,200,.55)}
+    .mini{color:var(--muted);font-size:12px}
+    .label{color:var(--muted);font-size:12px;margin-bottom:6px}
+    input{
+      width:100%;
+      padding:12px 12px;
+      border-radius:14px;
+      border:1px solid rgba(20,50,69,.85);
+      background:rgba(7,21,31,.72);
+      color:var(--text);
+      font-family:var(--mono);
+      outline:none;
+    }
+    input:focus{border-color:rgba(79,247,200,.6)}
+    .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    @media (max-width:720px){ .two{grid-template-columns:1fr} }
+    .hr{height:1px;background:rgba(20,50,69,.8);margin:12px 0}
+    pre{
+      margin:0;
+      padding:12px;
+      border-radius:14px;
+      border:1px solid rgba(20,50,69,.85);
+      background:rgba(7,21,31,.75);
+      color:var(--text);
+      overflow:auto;
+      line-height:1.35;
+    }
+    .ok{color:var(--accent)}
+    .bad{color:var(--bad)}
+    .warn{color:var(--warn)}
+    .accent2{color:var(--accent2)}
+    .kpi{font-size:14px}
+    .kpi strong{color:var(--accent)}
+    .right{display:flex;gap:10px;align-items:center}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title"><span class="bolt">⚡</span> Intercom Dashboard Bot <span class="mini">(localhost)</span></div>
+    <div class="sub">Tip: set a better Solana RPC to avoid 429. This UI is rate-limited with cache by default.</div>
+
+    <div class="grid">
+
+      <div class="card">
+        <div class="row">
+          <div class="pill kpi">SOL Balance: <strong id="solBal">—</strong> SOL</div>
+          <div class="right">
+            <div class="pill mini">Updated: <span id="updated">—</span></div>
+            <button class="btn" id="refreshBtn">Refresh</button>
+          </div>
+        </div>
+        <div class="hr"></div>
+        <div class="label">Wallet (Solana Public Key)</div>
+        <input id="pubkey" placeholder="Paste your Solana address (public key)..." />
+        <div class="mini" style="margin-top:8px;color:var(--muted)">
+          TX list shows last signatures. If you see <span class="warn">429</span>, set <code>SOL_RPC</code> to a provider + keep refresh interval.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row">
+          <div class="pill">Prices (USD): <span id="pricesLine">—</span></div>
+        </div>
+        <div class="hr"></div>
+        <div class="mini">Chart: CoinGecko 24h market_chart (placeholder text for lightweight mode).</div>
+        <pre id="chartBox">Waiting price feed...</pre>
+      </div>
+
+      <div class="card">
+        <div class="pill">Recent TX</div>
+        <div class="hr"></div>
+        <pre id="txBox">{ "ok": true, "note": "Enter a wallet address then refresh." }</pre>
+      </div>
+
+      <div class="card">
+        <div class="pill">Swap Simulator (x*y=k)</div>
+        <div class="hr"></div>
+
+        <div class="two">
+          <div>
+            <div class="label">Reserve X</div>
+            <input id="rx" value="1000" inputmode="decimal" />
+          </div>
+          <div>
+            <div class="label">Reserve Y</div>
+            <input id="ry" value="1000" inputmode="decimal" />
+          </div>
+        </div>
+
+        <div style="height:10px"></div>
+
+        <div class="two">
+          <div>
+            <div class="label">Amount In (X)</div>
+            <input id="ain" value="10" inputmode="decimal" />
+          </div>
+          <div>
+            <div class="label">Fee (bps)</div>
+            <input id="fee" value="30" inputmode="numeric" />
+          </div>
+        </div>
+
+        <div style="height:12px"></div>
+
+        <button class="btn" id="simBtn">Simulate</button>
+        <div style="height:12px"></div>
+        <pre id="simBox">{ "ok": true, "note": "Simulate to see output." }</pre>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    const state = {
+      timer: null,
+      refreshing: false,
+      intervalMs: 20000
+    };
+
+    function nowLocal() {
+      const d = new Date();
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+
+    function setJSON(el, obj, tone="ok") {
+      const txt = JSON.stringify(obj, null, 2);
+      el.textContent = txt;
+      el.className = "";
+    }
+
+    async function getJSON(url) {
+      const r = await fetch(url);
+      return await r.json();
+    }
+
+    function fmtPrice(n) {
+      if (typeof n !== "number") return "—";
+      return n >= 1000 ? n.toFixed(0) : n >= 1 ? n.toFixed(2) : n.toFixed(6);
+    }
+
+    function fmtPct(n) {
+      if (typeof n !== "number") return "—";
+      const sign = n >= 0 ? "+" : "";
+      return `${sign}${n.toFixed(2)}%`;
+    }
+
+    async function refreshAll() {
+      if (state.refreshing) return;
+      state.refreshing = true;
+
+      $("updated").textContent = nowLocal();
+
+      const pubkey = $("pubkey").value.trim();
+      localStorage.setItem("intercom_pubkey", pubkey);
+
+      // Prices
+      try {
+        const p = await getJSON("/api/prices");
+        if (!p.ok) throw new Error(p.error || "prices error");
+        const btc = p.data.bitcoin;
+        const eth = p.data.ethereum;
+        const sol = p.data.solana;
+
+        $("pricesLine").innerHTML =
+          `<span class="accent2">bitcoin:</span> ${fmtPrice(btc.usd)} (${fmtPct(btc.usd_24h_change)}) | ` +
+          `<span class="accent2">ethereum:</span> ${fmtPrice(eth.usd)} (${fmtPct(eth.usd_24h_change)}) | ` +
+          `<span class="accent2">solana:</span> ${fmtPrice(sol.usd)} (${fmtPct(sol.usd_24h_change)})`;
+
+        $("chartBox").textContent =
+          `BTC $${fmtPrice(btc.usd)} (${fmtPct(btc.usd_24h_change)})\n` +
+          `ETH $${fmtPrice(eth.usd)} (${fmtPct(eth.usd_24h_change)})\n` +
+          `SOL $${fmtPrice(sol.usd)} (${fmtPct(sol.usd_24h_change)})\n\n` +
+          `Note: For lightweight mode, chart is simplified text.\n` +
+          `You can extend to real canvas chart later.`;
+
+      } catch (e) {
+        $("pricesLine").innerHTML = `<span class="bad">error</span>: ${String(e.message || e)}`;
+        $("chartBox").textContent = `Price feed error: ${String(e.message || e)}`;
+      }
+
+      // Balance + TX
+      if (pubkey) {
+        try {
+          const b = await getJSON(`/api/sol/balance?pubkey=${encodeURIComponent(pubkey)}`);
+          if (!b.ok) throw new Error(b.error || "balance error");
+          $("solBal").textContent = (typeof b.sol === "number" ? b.sol.toFixed(4) : "—");
+        } catch (e) {
+          $("solBal").textContent = "—";
+        }
+
+        try {
+          const t = await getJSON(`/api/sol/tx?pubkey=${encodeURIComponent(pubkey)}`);
+          if (!t.ok) throw new Error(t.error || "tx error");
+          setJSON($("txBox"), t);
+        } catch (e) {
+          setJSON($("txBox"), { ok:false, error: String(e.message || e) });
+        }
+      } else {
+        $("solBal").textContent = "—";
+        setJSON($("txBox"), { ok:true, note:"Enter a wallet address then refresh." });
+      }
+
+      state.refreshing = false;
+    }
+
+    async function simulate() {
+      try {
+        const payload = {
+          reserveX: Number($("rx").value),
+          reserveY: Number($("ry").value),
+          amountIn: Number($("ain").value),
+          feeBps: Number($("fee").value)
+        };
+
+        const r = await fetch("/api/simulate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const j = await r.json();
+        setJSON($("simBox"), j);
+      } catch (e) {
+        setJSON($("simBox"), { ok:false, error: String(e.message || e) });
+      }
+    }
+
+    // Init
+    const saved = localStorage.getItem("intercom_pubkey");
+    if (saved) $("pubkey").value = saved;
+
+    $("refreshBtn").addEventListener("click", refreshAll);
+    $("simBtn").addEventListener("click", simulate);
+
+    // Gentle auto refresh
+    refreshAll();
+    state.timer = setInterval(refreshAll, state.intervalMs);
+  </script>
+</body>
+</html>
