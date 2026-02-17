@@ -88,18 +88,7 @@ CHECKLIST:
 
 ---
 
-## 📸 Proof (Screenshots)
-
-Upload screenshots into `./assets/` using these exact filenames:
-
-- `assets/proof-dashboard-wallet.jpg`
-- `assets/proof-prices-chart.jpg`
-- `assets/proof-token-chart.jpg`
-- `assets/proof-agent-mode.jpg`
-- `assets/proof-swap-simulator.jpg`
-
-Then they render here:
-
+## 📸 Proof 
 ### Dashboard + Wallet
 ![Dashboard Wallet](./assets/proof-dashboard-wallet.jpg)
 
