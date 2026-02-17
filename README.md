@@ -1,7 +1,7 @@
 # 🧠 INTERCOM_BY_GAMBER8 — AI Trading Copilot
 
 ## 📍 Trac Address
-PASTE_TRAC_ADDRESS_LO
+trac1g2afss6v96du6jkuptl9gzv2c9g0n7lsn9sqx0u3639zgmx38nrs9lnqtz
 
 ---
 
